@@ -53,13 +53,15 @@ async def complete(
         # Room to spare in case a model reasons although asked not to.
         "max_tokens": 1500,
         "temperature": 0.3,
-        # Qwen: a short chat reply needs no chain of thought.
-        "chat_template_kwargs": {"enable_thinking": False},
     }
+    # privacy-* models carry their no-retention and reasoning settings in the LiteLLM config.
     if settings.llm_model.startswith("openrouter/"):
         # Chat text is third-party personal data: no hosted provider may keep or train on it.
         body["provider"] = {"data_collection": "deny", "zdr": True}
         body["reasoning"] = {"enabled": False}
+    elif not settings.llm_model.startswith("privacy-"):
+        # Self-hosted Qwen: a short chat reply needs no chain of thought.
+        body["chat_template_kwargs"] = {"enable_thinking": False}
     try:
         res = await client.post(
             f"{settings.llm_base_url.rstrip('/')}/chat/completions",

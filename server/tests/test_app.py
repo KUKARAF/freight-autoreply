@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.db import Database
 from app.flow import decide, keywords_match
+from app.llm import complete
 from app.main import create_app
 from app.models import Branch, DecideRequest, Flow, Otherwise, default_flow
 from app.settings import Settings
@@ -217,7 +218,7 @@ def test_defaults_and_model_thinking_never_reaches_the_other_party(env, monkeypa
     for name in ("LLM_BASE_URL", "LLM_MODEL"):
         monkeypatch.delenv(name, raising=False)
     assert Settings().llm_base_url == "https://litellm.osmosis.page/v1"
-    assert Settings().llm_model == "qwen3.6-27b"
+    assert Settings().llm_model == "privacy-qwen3.6-35b-a3b"
     client, db, fake = env
     db.save_flow(db.user_by_email("a@example.com")["id"], Flow(otherwise=Otherwise(action="llm")))
     auth = {"Authorization": f"Bearer {api_key(client, login(client))}"}
@@ -226,3 +227,24 @@ def test_defaults_and_model_thinking_never_reaches_the_other_party(env, monkeypa
     assert client.post("/v1/decide", json=body, headers=auth).json()["text"] == "Hello"
     fake.content = "<think>never closed"
     assert client.post("/v1/decide", json=body, headers=auth).json()["action"] == "none"
+
+
+@pytest.mark.parametrize(
+    ("model", "extra"),
+    [
+        ("privacy-qwen3.6-35b-a3b", set()),
+        ("openrouter/qwen/x", {"provider", "reasoning"}),
+        ("qwen3.6-27b", {"chat_template_kwargs"}),
+    ],
+)
+def test_model_specific_request_fields(model, extra):
+    fake = FakeLlm()
+    settings = Settings(llm_api_key="k", llm_base_url="https://llm.test/v1", llm_model=model)
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(fake)) as client:
+            await complete(client, settings, default_flow(), "", msg())
+
+    asyncio.run(go())
+    sent = json.loads(fake.requests[0].content)
+    assert set(sent) - {"model", "messages", "max_tokens", "temperature"} == extra

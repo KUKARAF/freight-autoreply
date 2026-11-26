@@ -23,14 +23,14 @@ The app does **not** know whether a freight is still open.
 |---|---|
 | `LLM_BASE_URL` | `https://litellm.osmosis.page/v1` |
 | `LLM_API_KEY` | empty: AI branches return an error, text rules work |
-| `LLM_MODEL` | `qwen3.6-27b` (open weights, Apache-2.0) |
-| `LLM_TIMEOUT` | `75` seconds (the model host may need to wake) |
+| `LLM_MODEL` | `privacy-qwen3.6-35b-a3b` (open weights, Apache-2.0; LiteLLM → OpenRouter privacy workspace, zero data retention) |
+| `LLM_TIMEOUT` | `75` seconds |
 | `LLM_DAILY_LIMIT` | `200` AI calls per user per UTC day |
 | `BASE_URL` | `http://localhost:8000` |
 | `DATABASE_PATH` | `data/app.db` (`/data/app.db` in the image) |
 | `PAYMENT_URL` | empty (online payment is not built) |
 
-A model name starting `openrouter/` also sends OpenRouter's no-data-retention flags.
+`privacy-*` models get their no-retention flags from the LiteLLM config; `openrouter/*` names send them from the app.
 
 ## Accounts (no public sign-up)
     docker compose exec freight python -m app.cli create-user someone@example.com   # prints a password
