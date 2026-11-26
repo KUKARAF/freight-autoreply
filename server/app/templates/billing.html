@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<p><a href="/">← Back</a></p>
+<h1>Payment</h1>
+<div class="card">
+  <p>Account: {{ user.email }}. Status: <strong>{{ "active" if user.active else "payment needed" }}</strong></p>
+  {% if payment_url %}<p><a href="{{ payment_url }}" rel="noopener">Go to payment</a></p>
+  {% else %}<p class="muted">Online payment is not set up yet. Contact the provider.</p>{% endif %}
+</div>
+{% endblock %}

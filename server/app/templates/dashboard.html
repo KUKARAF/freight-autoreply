@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% macro options(name, current, choices) %}
+<select name="{{ name }}">{% for value, label in choices %}<option value="{{ value }}" {{ "selected" if value == current }}>{{ label }}</option>{% endfor %}</select>
+{% endmacro %}
+{% set send_choices = [("suggest", "Suggest: I approve it first"), ("auto", "Send automatically")] %}
+{% block content %}
+<header class="row">
+  <h1>Freight Auto-Reply</h1>
+  <form method="post" action="/logout" class="row">
+    <input type="hidden" name="csrf" value="{{ user.csrf }}">
+    <span class="muted">{{ user.email }}</span> <a href="/billing">Payment</a> <button>Log out</button>
+  </form>
+</header>
+{% if message %}<p class="ok" role="status">{{ message }}</p>{% endif %}
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% if not user.active %}<p class="error">Your account is paused. <a href="/billing">Payment</a></p>{% endif %}
+
+<section class="card">
+  <h2>Try a message</h2>
+  <form method="post" action="/test">
+    <input type="hidden" name="csrf" value="{{ user.csrf }}">
+    <label>Incoming message
+      <textarea name="text" rows="2" required maxlength="4000">{{ test_input.text if test_input else "Hello, is this freight still available?" }}</textarea></label>
+    <div class="row">
+      <label>Platform {{ options("platform", test_input.platform if test_input else "timocom", [("timocom", "TIMOCOM"), ("transeu", "Trans.eu")]) }}</label>
+      <label class="inline"><input type="checkbox" name="is_first" {{ "checked" if not test_input or test_input.isFirst }}> First message in the chat</label>
+      <button class="primary">Test</button>
+    </div>
+    <p class="muted">Uses your saved rules. Nothing is sent to anyone.</p>
+  </form>
+  {% if test_error %}<p class="error">{{ test_error }}</p>{% endif %}
+  {% if test_result %}
+  <div class="result" id="test-result">
+    {% if test_result.action == "reply" %}
+      <p class="quote">{{ test_result.text }}</p>
+      <p><strong>{{ "Would be sent automatically" if test_result.autoSend else "Would wait for your approval" }}</strong></p>
+    {% else %}<p><strong>No reply</strong></p>{% endif %}
+    <p class="muted">Why: {{ test_result.source }}{% if test_result.note %} ({{ test_result.note }}){% endif %}</p>
+  </div>
+  {% endif %}
+</section>
+
+<form method="post" action="/flow" autocomplete="off">
+  <input type="hidden" name="csrf" value="{{ user.csrf }}">
+  <!-- Pressing Enter in a field must mean "save", not the first button in the list. -->
+  <button class="hidden" name="op" value="save" tabindex="-1" aria-hidden="true">Save</button>
+  <h2>Reply rules</h2>
+  <p class="muted">Rules are checked from the top. The first one that matches wins.</p>
+  {% for b in flow.branches %}
+  <fieldset class="card">
+    <legend>{{ "If" if loop.first else "Else if" }}</legend>
+    <input type="hidden" name="branch" value="{{ b.id }}">
+    <div class="row">
+      <label class="grow">Name <input type="text" name="{{ b.id }}.name" value="{{ b.name }}" maxlength="80"></label>
+      <label class="inline"><input type="checkbox" name="{{ b.id }}.enabled" {{ "checked" if b.enabled }}> On</label>
+    </div>
+    <div class="grid">
+      <label>Platform {{ options(b.id ~ ".platform", b.platform, [("any", "Any"), ("timocom", "TIMOCOM"), ("transeu", "Trans.eu")]) }}</label>
+      <label>When {{ options(b.id ~ ".match", b.match, [("keywords", "the message contains a word"), ("any", "any message arrives")]) }}</label>
+      <label class="inline"><input type="checkbox" name="{{ b.id }}.first_only" {{ "checked" if b.first_only }}> First message only</label>
+    </div>
+    <label>Words (separated by commas; accents do not matter)
+      <input type="text" name="{{ b.id }}.keywords" value="{{ b.keywords }}" maxlength="1000"></label>
+    <div class="grid">
+      <label>Then {{ options(b.id ~ ".action", b.action, [("template", "reply with my text"), ("llm", "let the AI write a reply"), ("ignore", "do not reply")]) }}</label>
+      <label>Sending {{ options(b.id ~ ".send", "auto" if b.auto_send else "suggest", send_choices) }}</label>
+    </div>
+    <label>My text <textarea name="{{ b.id }}.reply" rows="2" maxlength="2000">{{ b.reply }}</textarea></label>
+    <details {{ "open" if b.action == "llm" }}><summary>AI instructions for this rule</summary>
+      <textarea name="{{ b.id }}.instructions" rows="2" maxlength="2000">{{ b.instructions }}</textarea></details>
+    <div class="row end">
+      <button name="op" value="up:{{ b.id }}" {{ "disabled" if loop.first }}>Move up</button>
+      <button name="op" value="down:{{ b.id }}" {{ "disabled" if loop.last }}>Move down</button>
+      <button name="op" value="remove:{{ b.id }}">Delete rule</button>
+    </div>
+  </fieldset>
+  {% endfor %}
+  <button name="op" value="add">+ Add rule</button>
+
+  <fieldset class="card">
+    <legend>{{ "Otherwise" if flow.branches else "For every message" }}</legend>
+    <div class="grid">
+      <label>Then {{ options("otherwise.action", flow.otherwise.action, [("none", "do nothing"), ("template", "reply with my text"), ("llm", "let the AI write a reply")]) }}</label>
+      <label>Sending {{ options("otherwise.send", "auto" if flow.otherwise.auto_send else "suggest", send_choices) }}</label>
+    </div>
+    <label>My text <textarea name="otherwise.reply" rows="2" maxlength="2000">{{ flow.otherwise.reply }}</textarea></label>
+  </fieldset>
+
+  <section class="card">
+    <h2>AI</h2>
+    {% if llm_ready %}<p class="muted">AI replies used today: {{ llm_used }} of {{ llm_limit }}.</p>
+    {% else %}<p class="error">AI replies are not configured on the server yet. Rules with your own text work.</p>{% endif %}
+    <label>About your company and how to answer
+      <textarea name="prompt" rows="6" maxlength="4000">{{ flow.prompt }}</textarea></label>
+    <label>AI notice added to automatically sent AI replies
+      <input type="text" name="disclosure" value="{{ flow.disclosure }}" maxlength="200"></label>
+  </section>
+  <p class="muted">Placeholders for your text: {firstName} {senderName} {company} {loadingCity} {unloadingCity}
+    (mostly TIMOCOM). If one has no value, the reply waits for approval.
+    The system cannot check whether a freight is still open, so be careful with automatic "yes, it is available".</p>
+  <div class="savebar"><button class="primary" name="op" value="save">Save</button></div>
+</form>
+
+<section class="card">
+  <h2>Connect the Firefox extension</h2>
+  <p>Server address: <code>{{ base_url }}</code></p>
+  {% if new_key %}
+    <p class="ok">Copy your access key now. It is shown only once.</p>
+    <p><code id="new-key">{{ new_key }}</code></p>
+  {% elif key %}<p>Current key starts with <code>{{ key.prefix }}</code>.</p>
+  {% else %}<p>No access key yet.</p>{% endif %}
+  <form method="post" action="/api-key">
+    <input type="hidden" name="csrf" value="{{ user.csrf }}">
+    <button>{{ "Replace key (the old one stops working)" if key else "Create access key" }}</button>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,16 @@
+{
+  "name": "freight-auto-reply",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/engine.test.js",
+    "test:e2e": "node test/e2e.js",
+    "lint": "web-ext lint --source-dir extension",
+    "build": "web-ext build --source-dir extension --artifacts-dir dist --overwrite-dest"
+  },
+  "devDependencies": {
+    "selenium-webdriver": "^4.51.0",
+    "web-ext": "^10.8.0",
+    "ws": "^8.23.0"
+  }
+}

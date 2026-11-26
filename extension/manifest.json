@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Freight Auto-Reply",
+  "version": "0.2.0",
+  "description": "Drafts or sends replies to chat messages on TIMOCOM and Trans.eu, using rules with an optional LLM fallback.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "freight-auto-reply@local",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": ["none"],
+        "optional": ["personalCommunications"]
+      }
+    }
+  },
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://my.timocom.com/*",
+    "https://platform.trans.eu/*",
+    "https://freight.osmosis.page/*"
+  ],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*"],
+  "background": { "scripts": ["background/main.js"], "type": "module" },
+  "content_scripts": [
+    {
+      "matches": ["https://my.timocom.com/*", "https://platform.trans.eu/*"],
+      "js": ["content/relay.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://platform.trans.eu/*"],
+      "js": ["content/bridge-transeu.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://my.timocom.com/*"],
+      "js": ["content/bridge-timocom.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ],
+  "action": { "default_title": "Freight Auto-Reply", "default_popup": "ui/popup.html" },
+  "options_ui": { "page": "ui/options.html", "open_in_tab": true }
+}

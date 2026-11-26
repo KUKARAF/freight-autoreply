@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="options">
+  <h1>Freight Auto-Reply settings</h1>
+  <form id="form">
+    <h2>Platforms</h2>
+    <label class="inline"><input type="checkbox" id="platforms.timocom"> TIMOCOM</label>
+    <label class="inline"><input type="checkbox" id="platforms.transeu"> Trans.eu</label>
+
+    <h2>Safety limits (apply to automatic sending)</h2>
+    <div class="grid">
+      <label>Min. delay (s) <input type="number" min="0" max="25" id="limits.delayMinSec"></label>
+      <label>Max. delay (s) <input type="number" min="0" max="25" id="limits.delayMaxSec"></label>
+      <label>Cooldown per chat (s) <input type="number" min="0" id="limits.cooldownSec"></label>
+      <label>Max per chat per day <input type="number" min="0" id="limits.maxPerConversationPerDay"></label>
+      <label>Max per hour <input type="number" min="0" id="limits.maxPerHour"></label>
+      <label>Quiet after your own reply (min) <input type="number" min="0" id="limits.humanQuietMin"></label>
+    </div>
+
+    <h2>Reply rules and AI</h2>
+    <p class="muted">Rules and the AI prompt are edited on the website. For each incoming message, its text,
+      up to 10 earlier messages, the sender's name and company and the route cities are sent to that server.</p>
+    <label>Server address <input type="url" id="backend.baseUrl"></label>
+    <label>Access key (create it on the website) <input type="password" id="backend.apiKey" autocomplete="off"></label>
+    <p class="row"><button type="button" id="check">Test connection</button> <button type="button" id="website">Open website</button></p>
+
+    <p class="row"><button class="primary" type="submit">Save</button><span id="status" role="status"></span></p>
+  </form>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>
