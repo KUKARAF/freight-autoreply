@@ -2,6 +2,7 @@
 // answers for every host, so no request can reach the real sites. All data here is synthetic.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
@@ -31,13 +32,51 @@ const pages = {
 
 // ---- the real web app, published as https://freight.osmosis.page through the proxy
 const APP_PORT = 18765;
+// A mock sign-in provider (stands in for Authentik). It checks PKCE like a real one.
+const IDP_PORT = 18766;
+const ISSUER = `http://127.0.0.1:${IDP_PORT}/application/o/freight/`;
+const idpKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const codes = new Map();
+const b64 = (v) => Buffer.from(typeof v === "string" ? v : JSON.stringify(v)).toString("base64url");
+const idp = http.createServer((req, res) => {
+  const url = new URL(req.url, ISSUER);
+  const json = (status, body) => (res.writeHead(status, { "Content-Type": "application/json" }), res.end(JSON.stringify(body)));
+  if (url.pathname.endsWith("openid-configuration")) {
+    const at = (p) => `http://127.0.0.1:${IDP_PORT}/${p}`;
+    return json(200, { issuer: ISSUER, authorization_endpoint: at("authorize"), token_endpoint: at("token"), jwks_uri: at("jwks") });
+  }
+  if (url.pathname === "/jwks") return json(200, { keys: [{ ...idpKeys.publicKey.export({ format: "jwk" }), kid: "k1" }] });
+  if (url.pathname === "/authorize") {
+    const code = randomUUID();
+    codes.set(code, Object.fromEntries(url.searchParams));
+    const back = new URL(url.searchParams.get("redirect_uri"));
+    back.search = new URLSearchParams({ code, state: url.searchParams.get("state") });
+    return res.writeHead(302, { Location: back.href }).end();
+  }
+  let body = "";
+  req.on("data", (d) => (body += d));
+  req.on("end", () => {
+    const form = new URLSearchParams(body);
+    const asked = codes.get(form.get("code"));
+    codes.delete(form.get("code"));
+    if (!asked || createHash("sha256").update(form.get("code_verifier")).digest("base64url") !== asked.code_challenge) {
+      return json(400, { error: "invalid_grant" });
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const head = b64({ alg: "RS256", kid: "k1" });
+    const claims = b64({ iss: ISSUER, aud: asked.client_id, sub: "e2e-sub", email: "e2e@example.com",
+      groups: ["freight"], nonce: asked.nonce, iat: now, exp: now + 300 });
+    const signature = sign("sha256", Buffer.from(`${head}.${claims}`), idpKeys.privateKey).toString("base64url");
+    json(200, { id_token: `${head}.${claims}.${signature}` });
+  });
+});
+await new Promise((r) => idp.listen(IDP_PORT, "127.0.0.1", r));
 const appEnv = {
   ...process.env, UV_NO_CONFIG: "1", DATABASE_PATH: path.join(tmp, "app.db"),
   BASE_URL: "https://freight.osmosis.page", LLM_API_KEY: "",
+  OIDC_ISSUER: ISSUER, OIDC_CLIENT_ID: "e2e-client", OIDC_ALLOWED_GROUPS: "freight",
 };
 const uv = { cwd: path.join(root, "server"), env: appEnv };
-const created = execFileSync("uv", ["run", "python", "-m", "app.cli", "create-user", "e2e@example.com"], uv).toString();
-const password = created.match(/password: (\S+)/)[1];
 const webApp = spawn("uv", ["run", "uvicorn", "app.main:create_app", "--factory", "--port", String(APP_PORT)],
   { ...uv, stdio: ["ignore", "ignore", "pipe"], detached: true });
 let appLog = "";
@@ -107,7 +146,8 @@ for (const [k, v] of Object.entries({
   "network.proxy.type": 1,
   "network.proxy.http": "127.0.0.1", "network.proxy.http_port": port,
   "network.proxy.ssl": "127.0.0.1", "network.proxy.ssl_port": port,
-  "network.proxy.no_proxies_on": "",
+  // Only the mock sign-in provider on loopback is reached directly.
+  "network.proxy.no_proxies_on": "127.0.0.1",
   "extensions.webextensions.uuids": JSON.stringify({ "freight-auto-reply@local": UUID }),
 })) options.setPreference(k, v);
 const driver = await new webdriver.Builder().forBrowser("firefox").setFirefoxOptions(options)
@@ -182,9 +222,7 @@ try {
     await element.sendKeys(value);
   };
   await openTab("https://freight.osmosis.page/");
-  await type("input[name=email]", "e2e@example.com");
-  await type("input[name=password]", password);
-  await click("form button.primary");
+  await click("#sso");
   await type('input[name="available.keywords"]', "dostepne");
   await type('textarea[name="available.reply"]', 'Tak <&> "ok"');
   await click('select[name="available.send"] option[value="auto"]');
@@ -199,7 +237,7 @@ try {
   }
   await click('form[action="/api-key"] button');
   const apiKey = await (await find("#new-key")).getText();
-  console.log("web app: login, rule edit, test box, access key OK");
+  console.log("web app: SSO sign-in (PKCE), rule edit, test box, access key OK");
 
   const backend = { baseUrl: "https://freight.osmosis.page", apiKey };
   assert.deepEqual(await call("checkConnection", { backend }), { ok: true, email: "e2e@example.com", aiConfigured: false });
@@ -297,6 +335,7 @@ try {
 } finally {
   await driver.quit();
   proxy.close();
+  idp.close();
   server.close();
   wss.close();
   try { process.kill(-webApp.pid); } catch { /* already gone */ }

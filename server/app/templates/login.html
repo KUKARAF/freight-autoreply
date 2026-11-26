@@ -1,10 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Freight Auto-Reply</h1>
-<form method="post" action="/login" class="card narrow">
+<div class="card narrow">
   {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-  <label>Email <input type="email" name="email" required autocomplete="username"></label>
-  <label>Password <input type="password" name="password" required autocomplete="current-password"></label>
-  <button class="primary">Log in</button>
-</form>
+  {% if configured %}<p><a class="button primary" id="sso" href="/auth/login">Log in with SSO</a></p>
+  {% else %}<p class="error">Single sign-on is not set up on the server yet.</p>{% endif %}
+</div>
 {% endblock %}

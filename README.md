@@ -32,9 +32,21 @@ The app does **not** know whether a freight is still open.
 
 `privacy-*` models get their no-retention flags from the LiteLLM config; `openrouter/*` names send them from the app.
 
-## Accounts (no public sign-up)
-    docker compose exec freight python -m app.cli create-user someone@example.com   # prints a password
-    # also: reset-password, activate, deactivate (deactivated accounts get HTTP 402)
+## Sign-in: single sign-on only
+There are no passwords in this app. Sign-in is OpenID Connect (authorization code + PKCE, **public client, no secret**).
+An account is created on first sign-in, only for members of an allowed group.
+
+| Variable | Default |
+|---|---|
+| `OIDC_ISSUER` | `https://auth.osmosis.page/application/o/freight/` |
+| `OIDC_CLIENT_ID` | empty: sign-in is disabled |
+| `OIDC_ALLOWED_GROUPS` | `freight,authentik Admins` (empty: nobody gets in) |
+
+Authentik: OAuth2/OpenID provider, client type **Public**, a **signing key** selected (RS256), redirect URI
+`https://freight.osmosis.page/auth/callback` (strict), scopes `openid email profile`; application slug `freight`.
+
+Sessions last 12 hours. **Removing someone in Authentik does not revoke their extension access key**:
+also run `docker compose exec freight python -m app.cli deactivate EMAIL` (`list`, `activate` also exist).
 
 ## Install the extension (testing)
 `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on** → `extension/manifest.json`.

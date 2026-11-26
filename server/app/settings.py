@@ -19,6 +19,11 @@ class Settings:
     # Generous, so a self-hosted model that has to wake up still works.
     llm_timeout: int = field(default_factory=lambda: int(os.environ.get("LLM_TIMEOUT", "75")))
     payment_url: str = _env("PAYMENT_URL")
+    # Sign-in is single sign-on only.
+    oidc_issuer: str = _env("OIDC_ISSUER", "https://auth.osmosis.page/application/o/freight/")
+    oidc_client_id: str = _env("OIDC_CLIENT_ID")
+    # Comma separated. A user must be in at least one of these; empty means nobody gets in.
+    oidc_allowed_groups: str = _env("OIDC_ALLOWED_GROUPS", "freight,authentik Admins")
 
     @property
     def secure_cookies(self) -> bool:

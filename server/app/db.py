@@ -1,7 +1,6 @@
-"""SQLite storage. Message text is never stored."""
+"""SQLite storage. Message text is never stored. Accounts come from single sign-on."""
 
 import hashlib
-import hmac
 import secrets
 import sqlite3
 import time
@@ -13,8 +12,10 @@ from .models import Flow, default_flow
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, password TEXT NOT NULL,
+  id INTEGER PRIMARY KEY, sub TEXT NOT NULL UNIQUE, email TEXT NOT NULL,
   active INTEGER NOT NULL DEFAULT 1, flow TEXT NOT NULL, created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS pending_logins (
+  state_hash TEXT PRIMARY KEY, verifier TEXT NOT NULL, nonce TEXT NOT NULL, expires INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS api_keys (
   id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, created INTEGER NOT NULL, last_used INTEGER);
@@ -25,22 +26,13 @@ CREATE TABLE IF NOT EXISTS usage (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, day TEXT NOT NULL,
   llm_calls INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, day));
 """
-SESSION_SECONDS = 14 * 24 * 3600
+# Short, so that access removed in the sign-in provider ends here too within a working day.
+SESSION_SECONDS = 12 * 3600
+LOGIN_SECONDS = 10 * 60
 
 
 def sha256(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
-
-
-def hash_password(password: str, salt: bytes | None = None) -> str:
-    salt = salt or secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
-    return f"{salt.hex()}${digest.hex()}"
-
-
-def verify_password(password: str, stored: str) -> bool:
-    salt = bytes.fromhex(stored.split("$")[0])
-    return hmac.compare_digest(hash_password(password, salt), stored)
 
 
 class Database:
@@ -49,7 +41,18 @@ class Database:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as c:
             c.execute("PRAGMA journal_mode=WAL")
+            self._drop_password_schema(c)
             c.executescript(SCHEMA)
+
+    @staticmethod
+    def _drop_password_schema(c):
+        """The first release had password accounts. Replace those tables only while they are empty."""
+        if "password" not in {row["name"] for row in c.execute("PRAGMA table_info(users)")}:
+            return
+        if c.execute("SELECT COUNT(*) FROM users").fetchone()[0]:
+            raise RuntimeError("password accounts exist: migrate them to single sign-on by hand")
+        for table in ("api_keys", "sessions", "usage", "users"):
+            c.execute(f"DROP TABLE IF EXISTS {table}")
 
     @contextmanager
     def connect(self):
@@ -70,17 +73,43 @@ class Database:
         with self.connect() as c:
             return c.execute(sql, args).rowcount
 
-    def create_user(self, email: str, password: str) -> None:
+    def sign_in_user(self, subject: str, email: str) -> int:
+        """Create the account on first sign-in; the provider's subject id is its identity."""
         self.run(
-            "INSERT INTO users (email, password, flow, created) VALUES (?, ?, ?, ?)",
+            "INSERT INTO users (sub, email, flow, created) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (sub) DO UPDATE SET email = excluded.email",
+            subject,
             email.strip().lower(),
-            hash_password(password),
             default_flow().model_dump_json(),
             int(time.time()),
         )
+        return self.one("SELECT id FROM users WHERE sub = ?", subject)["id"]
 
-    def user_by_email(self, email: str):
-        return self.one("SELECT * FROM users WHERE email = ?", email.strip().lower())
+    def users_by_email(self, email: str) -> list:
+        with self.connect() as c:
+            return c.execute("SELECT * FROM users WHERE email = ?", (email.strip().lower(),)).fetchall()
+
+    def all_users(self) -> list:
+        with self.connect() as c:
+            return c.execute("SELECT email, active FROM users ORDER BY email").fetchall()
+
+    def start_login(self, state: str, verifier: str, nonce: str) -> None:
+        self.run("DELETE FROM pending_logins WHERE expires < ?", int(time.time()))
+        self.run(
+            "INSERT INTO pending_logins (state_hash, verifier, nonce, expires) VALUES (?, ?, ?, ?)",
+            sha256(state),
+            verifier,
+            nonce,
+            int(time.time()) + LOGIN_SECONDS,
+        )
+
+    def take_login(self, state: str):
+        """Single use: the row is removed as it is read."""
+        with self.connect() as c:
+            return c.execute(
+                "DELETE FROM pending_logins WHERE state_hash = ? AND expires > ? RETURNING verifier, nonce",
+                (sha256(state), int(time.time())),
+            ).fetchone()
 
     def flow(self, user_id: int) -> Flow:
         return Flow.model_validate_json(self.one("SELECT flow FROM users WHERE id = ?", user_id)["flow"])

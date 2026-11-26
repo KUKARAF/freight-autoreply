@@ -1,4 +1,5 @@
 import hmac
+import secrets
 import time
 import uuid
 from collections import defaultdict, deque
@@ -12,9 +13,10 @@ from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from . import llm
-from .db import SESSION_SECONDS, Database, hash_password, verify_password
+from .db import LOGIN_SECONDS, SESSION_SECONDS, Database
 from .flow import decide
 from .models import Branch, DecideRequest, Decision, Flow, Otherwise
+from .oidc import Oidc, OidcError
 from .settings import Settings
 
 HERE = Path(__file__).parent
@@ -61,7 +63,8 @@ def create_app(
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     login_throttle = Throttle(10, 15 * 60)
     api_throttle = Throttle(60, 60)
-    dummy_hash = hash_password("not a real password")
+    oidc = Oidc(settings, transport)
+    allowed_groups = {g.strip() for g in settings.oidc_allowed_groups.split(",") if g.strip()}
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -155,34 +158,67 @@ def create_app(
 
     # ---- Web UI
 
+    def login_view(request: Request, error: str = "", status: int = 200):
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"error": error, "configured": bool(settings.oidc_client_id)},
+            status_code=status,
+        )
+
+    def cookie_options() -> dict:
+        return {"httponly": True, "samesite": "lax", "secure": settings.secure_cookies}
+
     @app.get("/login")
     def login_page(request: Request):
-        return templates.TemplateResponse(request, "login.html", {})
+        return login_view(request)
 
-    @app.post("/login")
-    async def login(request: Request):
-        form = await request.form()
-        email, password = str(form.get("email", ""))[:200], str(form.get("password", ""))[:200]
-
-        def fail(message: str, status: int):
-            return templates.TemplateResponse(request, "login.html", {"error": message}, status_code=status)
-
+    @app.get("/auth/login")
+    async def sso_start(request: Request):
+        if not settings.oidc_client_id:
+            return login_view(request, "Single sign-on is not set up on the server yet.", 503)
         if not login_throttle.allow(client_ip(request)):
-            return fail("Too many attempts. Try again in 15 minutes.", 429)
-        user = db.user_by_email(email)
-        # Same work for unknown addresses, so timing does not reveal which accounts exist.
-        ok = verify_password(password, user["password"] if user else dummy_hash)
-        if not (user and ok):
-            return fail("Wrong email or password.", 401)
+            return login_view(request, "Too many attempts. Try again in 15 minutes.", 429)
+        state, nonce, verifier = (secrets.token_urlsafe(32) for _ in range(3))
+        try:
+            url = await oidc.authorize_url(state, nonce, verifier)
+        except OidcError as e:
+            return login_view(request, f"Sign-in is unavailable: {e}", 502)
+        db.start_login(state, verifier, nonce)
+        response = RedirectResponse(url, status_code=303)
+        # Ties the attempt to this browser, so nobody can be signed in with someone else's link.
+        response.set_cookie("sso_state", state, max_age=LOGIN_SECONDS, path="/auth", **cookie_options())
+        return response
+
+    @app.get("/auth/callback")
+    async def sso_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+        def fail(message: str, status: int):
+            response = login_view(request, message, status)
+            response.delete_cookie("sso_state", path="/auth")
+            return response
+
+        cookie = request.cookies.get("sso_state", "")
+        if not state or not hmac.compare_digest(cookie.encode(), state.encode()):
+            return fail("That sign-in attempt expired or started in another browser. Try again.", 400)
+        pending = db.take_login(state)
+        if not pending:
+            return fail("That sign-in attempt expired. Try again.", 400)
+        if error or not code:
+            return fail("Sign-in was cancelled or refused.", 403)
+        try:
+            claims = await oidc.sign_in(code, pending["verifier"], pending["nonce"])
+        except OidcError as e:
+            return fail(f"Sign-in failed: {e}", 502)
+        groups = claims.get("groups")
+        if not allowed_groups.intersection(groups if isinstance(groups, list) else []):
+            return fail("Your account has no access to this app. Ask the administrator.", 403)
+        email = str(claims.get("email") or claims.get("preferred_username") or claims["sub"])[:200]
+        user_id = db.sign_in_user(str(claims["sub"])[:300], email)
         response = RedirectResponse("/", status_code=303)
         response.set_cookie(
-            "session",
-            db.create_session(user["id"]),
-            max_age=SESSION_SECONDS,
-            httponly=True,
-            samesite="lax",
-            secure=settings.secure_cookies,
+            "session", db.create_session(user_id), max_age=SESSION_SECONDS, **cookie_options()
         )
+        response.delete_cookie("sso_state", path="/auth")
         return response
 
     @app.post("/logout")
